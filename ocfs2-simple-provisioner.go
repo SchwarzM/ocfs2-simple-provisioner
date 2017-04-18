@@ -19,7 +19,7 @@ import (
 
 const (
 	resyncPeriod              = 15 * time.Second
-	provisionerName           = "github.com/SchwarzM/ocfs2-simple"
+	provisionerName           = "ocfs2-simple-provisioner"
 	exponentialBackOffOnError = false
 	failedRetryThreshold      = 5
 	leasePeriod               = controller.DefaultLeaseDuration
@@ -60,6 +60,8 @@ func (p *ocfs2SimpleProvisioner) Provision(options controller.VolumeOptions) (*v
 		return nil, err
 	}
 	pa := p.baseDir
+  pvname := options.PVName
+  reclaim := options.PersistentVolumeReclaimPolicy
 	modeDynamic := false
 	if modestr, ok := options.PVC.Annotations["modeDynamic"]; ok {
 		var err error
@@ -67,7 +69,9 @@ func (p *ocfs2SimpleProvisioner) Provision(options controller.VolumeOptions) (*v
 		if err != nil {
 			return nil, err
 		}
-	}
+	} else {
+    return nil, errors.New("Could not find mode annotation")
+  }
 	if modeDynamic {
 		pa = path.Join(p.baseDir, p.dynDir)
 		if _, err := os.Stat(pa); err != nil {
@@ -78,16 +82,24 @@ func (p *ocfs2SimpleProvisioner) Provision(options controller.VolumeOptions) (*v
 			glog.Infof("creating %v", pa)
 			return nil, err
 		}
-	}
+	} else {
+    pa = path.Join(p.baseDir, options.PVC.Name)
+    glog.Infof("checking if %v exists", pa)
+    if _, err := os.Stat(pa); err != nil {
+      return nil, errors.New("Could not find static directory it has to exist prior to the claim")
+    }
+    pvname = options.PVC.Name
+    reclaim = v1.PersistentVolumeReclaimRetain
+  }
 	pv := &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: options.PVName,
+			Name: pvname,
 			Annotations: map[string]string{
 				"modeDynamic": strconv.FormatBool(modeDynamic),
 			},
 		},
 		Spec: v1.PersistentVolumeSpec{
-			PersistentVolumeReclaimPolicy: options.PersistentVolumeReclaimPolicy,
+			PersistentVolumeReclaimPolicy: reclaim,
 			AccessModes:                   options.PVC.Spec.AccessModes,
 			Capacity: v1.ResourceList{
 				v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
@@ -118,9 +130,9 @@ func (p *ocfs2SimpleProvisioner) Delete(volume *v1.PersistentVolume) error {
 		pa = path.Join(pa, volume.Name)
 
 		glog.Infof("removing %v", pa)
-		//		if err := os.RemoveAll(path); err != nil {
-		//			return err
-		//		}
+		if err := os.RemoveAll(pa); err != nil {
+			return err
+		}
 	}
 	return nil
 }
